@@ -1,0 +1,118 @@
+plugins {
+    id 'java'
+    id 'net.neoforged.moddev' version '2.0.141'
+}
+
+version = mod_version
+group = mod_group_id
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    // For optional runtime test mods (Curios). Harmless if unused.
+    maven { url = 'https://maven.theillusivec4.top/' }
+}
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+// ---------------------------------------------------------------------------------------------
+// Bundled MySQL JDBC driver.
+//
+// The driver is NOT a compile dependency (MysqlBackend talks to it purely via reflection) and is
+// NOT on the normal runtime classpath. Instead the connector jar is copied verbatim into the mod
+// jar under /META-INF/jars/, and at runtime MysqlBackend loads it inside its own isolated
+// URLClassLoader (parent = platform loader). This means our copy of `com.mysql.*` lives in a
+// separate classloader from any other mod that also bundles MySQL Connector/J — they can never
+// clash, while the driver still works standalone when no other mod ships it.
+// ---------------------------------------------------------------------------------------------
+configurations {
+    // Classic JDBC only — exclude the X DevAPI's protobuf-java transitive (not needed for
+    // jdbc:mysql:// connections), so a single self-contained connector jar is bundled.
+    bundledDriver { transitive = false }
+}
+
+dependencies {
+    bundledDriver "com.mysql:mysql-connector-j:${mysql_connector_version}"
+
+    // Curios / CosmeticArmorReworked / Sophisticated Backpacks are integrated purely via reflection
+    // in the `compat` package, so the mod compiles against NeoForge alone and runs whether or not
+    // they're installed. Add them as runtimeOnly here only when you want to test against them locally.
+    // runtimeOnly "top.theillusivec4.curios:curios-neoforge:9.5.1+1.21.1"
+}
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        client {
+            client()
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+        server {
+            server()
+            programArgument '--nogui'
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+        gameTestServer {
+            type = "gameTestServer"
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+// Copy the resolved connector jar into a generated resources dir so it is packed into the mod jar
+// AND present on the dev-run classpath (exploded resources).
+var bundleDriver = tasks.register("bundleDriver", Copy) {
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    into "build/generated/sources/bundledDriver"
+    from(configurations.bundledDriver) {
+        // Single, stable name so the runtime loader can find it regardless of version.
+        rename '.*', 'mysql-connector-j.jar'
+        into "META-INF/jars"
+    }
+}
+
+// Inject the mod metadata properties into neoforge.mods.toml at build time.
+var generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            neo_version_range      : neo_version_range,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from "src/main/templates"
+    into "build/generated/sources/modMetadata"
+}
+
+sourceSets.main.resources.srcDir generateModMetadata
+sourceSets.main.resources.srcDir bundleDriver
+neoForge.ideSyncTask generateModMetadata
+neoForge.ideSyncTask bundleDriver
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
